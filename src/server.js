@@ -49,10 +49,13 @@ app.get("/v1/currency", async (req, res) => {
 
 // Endpoint de Raspagem/Scraper Web
 app.get("/v1/scrape", async (req, res) => {
-  const { url } = req.query;
+  let { url, format = "text" } = req.query;
   if (!url) return res.status(400).json({ error: "Parâmetro 'url' é obrigatório" });
 
-  const scrapedData = await rasparPaginaWeb(url);
+  // Limpa aspas ou colchetes acidentais enviados na URL
+  const cleanUrl = decodeURIComponent(url).replace(/[\[\]'"]/g, "").trim();
+
+  const scrapedData = await rasparPaginaWeb(cleanUrl, format.toLowerCase());
   if (!scrapedData) return res.status(500).json({ error: "Falha ao extrair conteúdo da URL" });
 
   return res.json(scrapedData);
