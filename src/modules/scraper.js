@@ -1,5 +1,12 @@
 import * as cheerio from "cheerio";
 
+// Instâncias do Redlib para fallback
+const REDLIB_INSTANCES = [
+  "https://redlib.freedit.eu",
+  "https://redlib.privacyredirect.com",
+  "https://rl.community.host"
+];
+
 export async function rasparPaginaWeb(targetUrl, format = "text") {
   try {
     let finalUrl = targetUrl.trim();
@@ -10,62 +17,63 @@ export async function rasparPaginaWeb(targetUrl, format = "text") {
     const urlObj = new URL(finalUrl);
 
     // ==========================================
-    // TRATAMENTO ESPECIAL PARA REDDIT / SUBDOMÍNIOS
+    // BYPASS REDDIT VIA REDLIB (Sem CAPTCHA)
     // ==========================================
     if (urlObj.hostname.includes("reddit.com")) {
-      // Se for o Reddit, usamos a API nativa de JSON deles adicionando .json na URL
-      let jsonUrl = finalUrl.split("?")[0];
-      if (!jsonUrl.endsWith(".json")) {
-        jsonUrl = jsonUrl.endsWith("/") ? `${jsonUrl}.json` : `${jsonUrl}/.json`;
-      }
+      const redlibPath = urlObj.pathname + urlObj.search;
 
-      const resReddit = await fetch(jsonUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
-        }
-      });
+      for (const instance of REDLIB_INSTANCES) {
+        try {
+          const redlibUrl = `${instance}${redlibPath}`;
+          const resRedlib = await fetch(redlibUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+          });
 
-      if (resReddit.ok) {
-        const data = await resReddit.json();
-        
-        // Se for um feed de Subreddit ou post único
-        if (Array.isArray(data)) {
-          // É um Post com comentários
-          const post = data[0]?.data?.children[0]?.data;
-          const comments = data[1]?.data?.children || [];
-          
-          const title = post?.title || "Reddit Post";
-          const selftext = post?.selftext || "";
-          const topComments = comments
-            .slice(0, 5)
-            .map(c => c.data?.body)
-            .filter(Boolean)
-            .join("\n---\n");
+          if (resRedlib.ok) {
+            const html = await resRedlib.text();
+            const $ = cheerio.load(html);
 
-          return {
-            title,
-            format: "text",
-            text: `[POST]: ${selftext}\n\n[PRINCIPAIS COMENTÁRIOS]:\n${topComments}`.substring(0, 8000)
-          };
-        } else if (data?.data?.children) {
-          // É a lista de posts de um Subreddit
-          const posts = data.data.children;
-          const listText = posts
-            .slice(0, 10)
-            .map(p => `• ${p.data.title} (Upvotes: ${p.data.ups})`)
-            .join("\n");
+            const title = $("title").text().replace("- Redlib", "").trim() || "Reddit Content";
 
-          return {
-            title: `Subreddit: ${urlObj.pathname}`,
-            format: "text",
-            text: listText.substring(0, 8000)
-          };
+            // Se pedir código bruto
+            if (format === "code" || format === "raw") {
+              return {
+                title,
+                format: "code",
+                html: $("body").html()?.trim() || "",
+                css: "",
+                js: ""
+              };
+            }
+
+            // Remove navegações do Redlib e limpa o texto dos posts
+            $("script, style, nav, footer, header, .header, .search").remove();
+            let text = $("main, #content, body").text();
+
+            let cleanText = text
+              .replace(/[\r\n\t]+/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+
+            if (cleanText) {
+              return {
+                title,
+                format: "text",
+                text: cleanText.substring(0, 8000)
+              };
+            }
+          }
+        } catch {
+          // Se uma instância falhar, o loop tenta a próxima
+          continue;
         }
       }
     }
 
     // ==========================================
-    // SCRAPER GENÉRICO PARA OUTROS SITES/SUBDOMÍNIOS
+    // SCRAPER GENÉRICO PARA OUTROS SITES
     // ==========================================
     const res = await fetch(finalUrl, {
       headers: {
@@ -88,6 +96,19 @@ export async function rasparPaginaWeb(targetUrl, format = "text") {
 
     const html = await res.text();
     const $ = cheerio.load(html);
+
+    // Se for detectada tela de desafio/CAPTCHA do Cloudflare em qualquer outro site
+    const isCaptcha = $("title").text().toLowerCase().includes("prove your humanity") || 
+                      $("title").text().toLowerCase().includes("just a moment");
+
+    if (isCaptcha) {
+      return {
+        title: "Bloqueio de CAPTCHA / Cloudflare",
+        format: "text",
+        text: "Erro: A página solicitada requer verificação humana (CAPTCHA) e não pode ser raspada diretamente."
+      };
+    }
+
     const title = $("title").text().trim() || $("h1").first().text().trim() || "Sem título";
 
     // MODALIDADE 1: Extração de Código (code / raw)
